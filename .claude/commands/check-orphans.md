@@ -100,9 +100,15 @@ gh api repos/tis-lab/BDC-Portal/issues/<parent-number>/sub_issues \
   --method POST -F sub_issue_id=<id>
 ```
 
-Cross-*repository* sub-issues are supported. Cross-*organization* is undocumented and may
-fail; if it does, fall back to an issue in this repository carrying the reference in its body
-with the `Tracking` label, which is how upstream dependencies are already handled.
+Cross-*repository* and cross-*organization* sub-issues both work — verified 2026-09-17 by
+linking `linkml/dm-bip#374` under `tis-lab/BDC-Portal#7`. Cross-org is undocumented but
+functional, so coordinated repos in other organizations link natively and need no fallback.
+
+An issue may have **only one parent**. Adding a second returns HTTP 422. When the target is
+already a sub-issue somewhere, link the top of its existing chain instead of re-parenting —
+that pulls the subtree in without destroying local structure. Check before assuming a link
+will land, and if re-parenting looks necessary, ask: it usually means the work belongs to a
+different grant.
 
 Limits: 100 sub-issues per parent, 8 levels of nesting.
 
