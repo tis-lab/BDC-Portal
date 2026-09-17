@@ -27,22 +27,31 @@ gh api --paginate "repos/tis-lab/BDC-Portal/issues?state=all&per_page=100" \
 
 ## 2. Orphans in owned repositories
 
-An open issue in an owned repo with no link to BDC-Portal. `Future`-labelled issues are
-excluded by design: they are declared out of scope, which is a valid answer.
+An open issue in an owned repo with no link to BDC-Portal. Two labels exclude an issue, and
+both are valid answers rather than gaps:
+
+- `Unscoped` — real work, deliberately outside deliverable reporting. Says nothing about why;
+  the reason lives in the other labels or the body. This is the catch-all, and it exists so a
+  deliberate decision doesn't resurface on every report.
+- `Future` — beyond the current period, or blocked on a precondition that doesn't exist yet.
 
 ```bash
 for r in study-palette bdc-dp-core bdc-dp-middleware; do
   gh issue list --repo tis-lab/$r --state open --limit 200 --json number,title,labels \
-    --jq ".[] | select([.labels[].name] | index(\"Future\") | not) | \"tis-lab/$r#\(.number)\t\(.title)\""
+    --jq ".[] | select([.labels[].name] | (index(\"Future\") or index(\"Unscoped\")) | not) | \"tis-lab/$r#\(.number)\t\(.title)\""
 done | sort > /tmp/open.txt
 
 join -v1 -t$'\t' /tmp/open.txt /tmp/linked.txt
 ```
 
-Note `gh --jq` does not accept `--arg`; interpolate the repo name in the shell.
+Note `gh --jq` does not accept `--arg`; interpolate the repo name in the shell. Also note
+`gh issue edit` has no `--json` flag — passing one fails silently under `2>&1 | tail`.
 
 For each result, propose one of: link it to the lowest existing BDC-Portal issue, label it
-`Future`, or leave it and say why. Present the list and wait — do not act.
+`Unscoped` or `Future`, or leave it and say why. Present the list and wait — do not act.
+
+An issue that doesn't fit any deliverable cleanly is a signal worth voicing rather than
+filing. Say so instead of attaching it to the nearest Epic.
 
 ## 3. Stale upstream trackers
 
