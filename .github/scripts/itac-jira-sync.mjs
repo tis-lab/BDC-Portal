@@ -11,7 +11,7 @@ const DRY_RUN = process.env.DRY_RUN === "true";
 const FIELD_ID = "ITAC Jira ID";
 const FIELD_URL = "ITAC Jira URL";
 const FIELD_STATUS = "ITAC Jira";
-const URL_BASE = "https://itacjira.nhlbi.nih.gov/projects/BDCP/browse/";
+const URL_BASE = "https://itacjira.nhlbi.nih.gov/projects/BDCP/issues/";
 const CANONICAL = /^BDCP-\d+$/;
 const STATUS_OK = "Yes";
 const STATUS_ERR = "Error";
