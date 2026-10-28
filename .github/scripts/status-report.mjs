@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 const {
   GH_TOKEN,
   REPOS,
-  SINCE_DAYS = "4",
+  SINCE_DAYS = "5",
   SLACK_WEBHOOK_URL = "",
   GITHUB_REPOSITORY,
   GITHUB_OUTPUT,
@@ -33,17 +33,25 @@ async function search(q) {
 }
 const short = (i) => `${i.repository_url.split("/").slice(-2).join("/")}#${i.number}`;
 const line = (i) => `- [${short(i)}](${i.html_url}) ${i.title}`;
+const clip = (s, n = 160) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-// Comments with a "Blocker:" line, written by contributors since the last report.
-const blockerComments = [];
+// Comments written by contributors since the last report (issue and PR conversation comments).
+const comments = [];
 for (const repo of repos) {
-  for (let page = 1; page <= 5; page++) {
+  for (let page = 1; page <= 10; page++) {
     const batch = await gh(`/repos/${repo}/issues/comments?since=${since.toISOString()}&per_page=100&page=${page}`);
     for (const c of batch) {
-      const m = c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im);
-      if (m && users.includes(c.user.login)) {
-        blockerComments.push({ user: c.user.login, text: m[1].trim(), url: c.html_url });
-      }
+      if (!users.includes(c.user.login) || new Date(c.created_at) < since) continue;
+      const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
+      const blockerLine =
+        c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
+        lines.find((l) => /\bblocked\b/i.test(l));
+      const issueUrl = c.html_url.split("#")[0];
+      const [, repoName, num] = issueUrl.match(/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/);
+      comments.push({
+        user: c.user.login, url: c.html_url, issueUrl, ref: `${repoName}#${num}`,
+        snippet: clip(lines[0] ?? ""), blocker: blockerLine ? clip(blockerLine.trim(), 200) : null,
+      });
     }
     if (batch.length < 100) break;
   }
@@ -53,20 +61,29 @@ let md = `# Status report ${today}\n\nActivity since ${sinceDate} in ${repos.map
 const slack = [];
 
 for (const u of users) {
+  const mine = comments.filter((c) => c.user === u);
   const done = [
     ...(await search(`${repoQ} assignee:${u} is:issue closed:>=${sinceDate}`)),
     ...(await search(`${repoQ} author:${u} is:pr is:merged merged:>=${sinceDate}`)),
   ];
   const next = await search(`${repoQ} assignee:${u} is:issue is:open`);
   const blockedIssues = next.filter((i) => i.labels.some((l) => l.name.toLowerCase() === "blocked"));
-  const comments = blockerComments.filter((c) => c.user === u);
 
-  md += `\n## @${u}\n\n**Done**\n${done.length ? done.map(line).join("\n") : "- _nothing closed or merged_"}\n`;
-  md += `\n**Next**\n${next.length ? next.map(line).join("\n") : "- _no open assigned issues_"}\n`;
+  const withComments = (i) =>
+    line(i) + "\n" +
+    mine.filter((c) => c.issueUrl === i.html_url).map((c) => `  - 💬 ${c.snippet} ([comment](${c.url}))`).map((s) => s + "\n").join("");
+  const listed = new Set([...done, ...next].map((i) => i.html_url));
+  const other = mine.filter((c) => !listed.has(c.issueUrl));
+
+  md += `\n## @${u}\n\n**Done**\n${done.length ? done.map(withComments).join("").trimEnd() : "- _nothing closed or merged_"}\n`;
+  md += `\n**Next**\n${next.length ? next.map(withComments).join("").trimEnd() : "- _no open assigned issues_"}\n`;
+  if (other.length) {
+    md += `\n**Other comments**\n${other.map((c) => `- ${c.ref}: ${c.snippet} ([comment](${c.url}))`).join("\n")}\n`;
+  }
   md += `\n**Blockers**\n`;
   const blk = [
-    ...blockedIssues.map((i) => `- [${short(i)}](${i.html_url}) ${i.title} (labelled \`blocked\`)`),
-    ...comments.map((c) => `- ${c.text} ([comment](${c.url}))`),
+    ...blockedIssues.map((i) => `- [${short(i)}](${i.html_url}) ${i.title} (labelled \`Blocked\`)`),
+    ...mine.filter((c) => c.blocker).map((c) => `- ${c.ref}: ${c.blocker} ([comment](${c.url}))`),
   ];
   md += blk.length ? blk.join("\n") + "\n" : "- None\n";
   if (blk.length) slack.push(`*Blockers – ${u}*\n${blk.join("\n")}`);
