@@ -1,0 +1,10 @@
+# GitHub handles included in each status report. Confirm and edit this list.
+rbrad8158        # Robert Bradford
+awalde003        # Anita Walden
+srumagesh        # Sruthi Magesh
+RudraPatel20     # Rudra Patel
+ShahimEssaid     # Shahim Essaid
+kevinschaper     # Kevin Schaper
+amc-corey-cox    # Corey Cox
+madanucd         # Madan
+varun-divya      # Divya
