@@ -9,6 +9,9 @@ const {
   SLACK_WEBHOOK_URL = "",
   GITHUB_REPOSITORY,
   GITHUB_OUTPUT,
+  PROJECT_TOKEN,
+  ORG = "tis-lab",
+  PROJECT_NUMBER = "7",
 } = process.env;
 const repos = REPOS.split(/\s+/).filter(Boolean);
 const users = readFileSync("Reporting/contributors.txt", "utf8")
@@ -38,6 +41,44 @@ const daysAgo = (d) => Math.max(0, Math.floor((Date.now() - new Date(d)) / 86400
 const ago = (d) => { const n = daysAgo(d); return n === 0 ? "today" : n === 1 ? "1 day ago" : `${n} days ago`; };
 const clip = (s, n = 160) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
+// ---- Current sprint, from the project board's "Sprint" iteration field ----
+if (!PROJECT_TOKEN) throw new Error("PROJECT_TOKEN is required to read the project board's Sprint field");
+async function gql(query, variables = {}) {
+  const res = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: { Authorization: `bearer ${PROJECT_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || body.errors) throw new Error(`GraphQL error (${res.status}): ${JSON.stringify(body.errors ?? body)}`);
+  return body.data;
+}
+const num = Number(PROJECT_NUMBER);
+const sprintField = (await gql(
+  `query($org:String!,$num:Int!){organization(login:$org){projectV2(number:$num){
+     field(name:"Sprint"){... on ProjectV2IterationField{configuration{iterations{id title startDate duration}}}}}}}`,
+  { org: ORG, num })).organization.projectV2.field;
+if (!sprintField) throw new Error('Project has no "Sprint" iteration field');
+// Current sprint = the latest one that has started (covers the gap between two sprints).
+const sprint = sprintField.configuration.iterations
+  .filter((it) => it.startDate <= today).sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
+if (!sprint) throw new Error("No sprint has started yet");
+const sprintEnd = new Date(Date.parse(sprint.startDate) + (sprint.duration - 1) * 86400000).toISOString().slice(0, 10);
+
+// URLs of every issue/PR that is on the board and assigned to the current sprint.
+const sprintUrls = new Set();
+for (let after = null, more = true; more;) {
+  const page = (await gql(
+    `query($org:String!,$num:Int!,$after:String){organization(login:$org){projectV2(number:$num){
+       items(first:100,after:$after){pageInfo{hasNextPage endCursor}
+         nodes{sprint:fieldValueByName(name:"Sprint"){... on ProjectV2ItemFieldIterationValue{iterationId}}
+               content{... on Issue{url} ... on PullRequest{url}}}}}}}`,
+    { org: ORG, num, after })).organization.projectV2.items;
+  for (const n of page.nodes) if (n.sprint?.iterationId === sprint.id && n.content?.url) sprintUrls.add(n.content.url);
+  more = page.pageInfo.hasNextPage; after = page.pageInfo.endCursor;
+}
+const inSprint = (i) => sprintUrls.has(i.html_url);
+
 // Comments written by contributors since the last report (issue and PR conversation comments).
 const comments = [];
 for (const repo of repos) {
@@ -45,6 +86,7 @@ for (const repo of repos) {
     const batch = await gh(`/repos/${repo}/issues/comments?since=${since.toISOString()}&per_page=100&page=${page}`);
     for (const c of batch) {
       if (!users.includes(c.user.login) || new Date(c.created_at) < since) continue;
+      if (!sprintUrls.has(c.html_url.split("#")[0])) continue;
       const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
       const blockerLine =
         c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
@@ -60,12 +102,12 @@ for (const repo of repos) {
   }
 }
 
-let md = `# Status report ${today}\n\nActivity since ${sinceDate} in ${repos.map((r) => `\`${r}\``).join(", ")}.\n`;
+let md = `# Status report ${today}\n\nCurrent sprint: **${sprint.title}** (${sprint.startDate} to ${sprintEnd}). Only issues on the [project board](https://github.com/orgs/${ORG}/projects/${PROJECT_NUMBER}) in this sprint are listed.\n\nActivity since ${sinceDate} in ${repos.map((r) => `\`${r}\``).join(", ")}.\n`;
 const slack = [];
 
 for (const u of users) {
   const mine = comments.filter((c) => c.user === u);
-  const doneIssues = await search(`${repoQ} assignee:${u} is:issue closed:>=${sinceDate}`);
+  const doneIssues = (await search(`${repoQ} assignee:${u} is:issue closed:>=${sinceDate}`)).filter(inSprint);
   const donePrs = await search(`${repoQ} author:${u} is:pr is:merged merged:>=${sinceDate}`);
   // A merged PR that closes one of the listed issues is shown under that issue, not twice.
   for (const pr of donePrs) {
@@ -76,8 +118,8 @@ for (const u of users) {
       if (issue) { (issue.prs ??= []).push(pr); pr.folded = true; }
     }
   }
-  const done = [...new Map([...doneIssues, ...donePrs.filter((p) => !p.folded)].map((i) => [i.html_url, i])).values()];
-  const next = await search(`${repoQ} assignee:${u} is:issue is:open`);
+  const done = [...new Map([...doneIssues, ...donePrs.filter((p) => !p.folded && inSprint(p))].map((i) => [i.html_url, i])).values()];
+  const next = (await search(`${repoQ} assignee:${u} is:issue is:open`)).filter(inSprint);
   const blockedIssues = next.filter((i) => i.labels.some((l) => l.name.toLowerCase() === "blocked"));
 
   const withComments = (i) =>
