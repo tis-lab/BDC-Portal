@@ -141,7 +141,7 @@ for (const u of users) {
   const other = mine.filter((c) => !listed.has(c.issueUrl));
 
   md += `\n## @${u}\n\n**Done**\n${done.length ? done.map((i) => withComments(i, sprintComments)).join("").trimEnd() : "- _nothing closed or merged_"}\n`;
-  md += `\n**Next**\n${next.length ? next.map(withComments).join("").trimEnd() : "- _no open assigned issues_"}\n`;
+  md += `\n**Next**\n${next.length ? next.map((i) => withComments(i)).join("").trimEnd() : "- _no open assigned issues_"}\n`;
   if (other.length) {
     md += `\n**Other comments**\n${other.map((c) => `- ${c.ref}: ${c.snippet} ([comment](${c.url}))`).join("\n")}\n`;
   }
