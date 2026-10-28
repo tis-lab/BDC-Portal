@@ -125,6 +125,7 @@ for (const repo of repos) {
 
 let md = `# Status report ${today}\n\nCurrent sprint: **${sprint.title}** (${sprint.startDate} to ${sprintEnd}). Only issues on the [project board](https://github.com/orgs/${ORG}/projects/${PROJECT_NUMBER}) in this sprint are listed.\n\nDone covers ${sprint.startDate} to today (sprint start); Next, other comments and blockers cover the last ${SINCE_DAYS} days (since ${sinceDate}). Repos: ${repos.map((r) => `\`${r}\``).join(", ")}.\n`;
 const slack = [];
+const slackIssues = new Map(); // issue ref -> { url, title, people[], quotes:Set } (each blocked issue once)
 
 for (const u of users) {
   const sprintComments = comments.filter((c) => c.user === u);            // sprint start -> today
@@ -204,11 +205,18 @@ for (const u of users) {
   if (check.size) {
     md += `\n**Check status** (update the Status if the work is still blocked)\n${[...check].map(([ref, h]) => `- ⚠️ [${ref}](${h.url}) ${h.text}`).join("\n")}\n`;
   }
-  if (blocked.size) {
-    const items = [...blocked].map(([ref, e]) =>
-      `• <${e.url}|${slackEsc(e.title || ref)}>` + (quotes.get(ref) ?? []).map((t) => `\n> ${slackText(t)}`).join(""));
-    slack.push(`*Blockers – ${firstNames[u] ?? u}*\n${items.join("\n")}`);
+  for (const [ref, e] of blocked) {
+    const s = slackIssues.get(ref) ?? { url: e.url, title: "", people: [], quotes: new Set() };
+    s.title ||= e.title;
+    s.people.push(firstNames[u] ?? u);
+    for (const q of quotes.get(ref) ?? []) s.quotes.add(q);
+    slackIssues.set(ref, s);
   }
+}
+
+for (const [ref, e] of slackIssues) {
+  slack.push(`• <${e.url}|${slackEsc(e.title || ref)}> (${e.people.join(", ")})` +
+    [...e.quotes].map((t) => `\n> ${slackText(t)}`).join(""));
 }
 
 mkdirSync("Reporting/reports", { recursive: true });
@@ -222,7 +230,7 @@ if (slack.length && SLACK_WEBHOOK_URL) {
   const res = await fetch(SLACK_WEBHOOK_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: `:rotating_light: *BDC Portal blockers (${today})*\n\n${slack.join("\n\n")}\n\n${link}` }),
+    body: JSON.stringify({ text: `:rotating_light: *BDC Portal blockers (${today})*\n\n${slack.join("\n")}\n\n${link}` }),
   });
   console.log(`slack: ${res.status}`);
 } else if (slack.length) {
