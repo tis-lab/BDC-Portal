@@ -13,18 +13,21 @@ It runs on a schedule and can be started by hand from the **Actions** tab (**Run
 
 ## What each section means
 
-- **Done** – issues assigned to the person that were closed, and pull requests they authored
-  that were merged, since the last report.
-- **Next** – open issues assigned to the person.
-- **Blockers** – open issues labelled `blocked`, plus any issue comment the person wrote
-  containing a line that starts with `Blocker:`.
+Covers the last 5 days (the report runs Tuesday 9am PT and Thursday 2pm PT).
+
+- **Done** – issues assigned to the person that were closed, and pull requests they wrote that
+  were merged. Comments they wrote on those issues are listed underneath.
+- **Next** – open issues assigned to the person, with their recent comments underneath.
+- **Other comments** – comments they wrote on issues that are not assigned to them.
+- **Blockers** – open issues labelled `Blocked`, plus any comment they wrote that has a line
+  starting with `Blocker:` or that contains the word "blocked".
 
 Only activity found in GitHub is listed; nothing is inferred. Work that isn't in GitHub
-(a talk, a meeting) is not captured — mention it in the Thursday meeting or Slack.
+(a talk, a meeting) is not captured. Issues with no assignee do not appear.
 
 ## How to flag a blocker
 
-Either label the issue `blocked`, or comment on it with a line such as:
+Either label the issue `Blocked`, or comment on it with a line such as:
 
 ```
 Blocker: waiting on @ShahimEssaid for API access
@@ -34,8 +37,7 @@ Blockers are also posted to the group Slack channel (see below).
 
 ## Repositories covered
 
-`tis-lab/BDC-Portal`, `tis-lab/study-palette`, `tis-lab/bdc-dp-core`, `tis-lab/bdc-dp-middleware`
-(the *owned* repositories in `DEVELOPMENT.md`). Edit `REPOS` in the workflow to change this.
+`tis-lab/BDC-Portal` and `tis-lab/study-palette`. Edit `REPOS` in the workflow to change this.
 
 ## Setup (one time, repo admin)
 
