@@ -1,0 +1,38 @@
+name: Blocker comment
+
+# When someone comments "Blocker: ..." on an issue that already has the `Blocked` label
+# (i.e. the Slack alert has already gone out), post the comment to Slack as a follow-up.
+# If the comment comes before the label exists, the Blocked label sync includes it in its alert.
+# Requires SLACK_WEBHOOK_URL; does nothing if it is not set.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: github.event.issue.pull_request == null && contains(github.event.issue.labels.*.name, 'Blocked')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post blocker comment to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          BODY: ${{ github.event.comment.body }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          TITLE: ${{ github.event.issue.title }}
+          NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "SLACK_WEBHOOK_URL not set; skipping"; exit 0; }
+          line=$(printf '%s\n' "$BODY" | grep -i -m1 -E '^[[:space:]>*_-]*blockers?\**[[:space:]]*:' || true)
+          [ -n "$line" ] || { echo "not a Blocker: comment; skipping"; exit 0; }
+          text=$(printf '%s' "$line" | sed -E 's/^[^:]*:[[:space:]]*[*_]*[[:space:]]*//' | cut -c1-300)
+          jq -n --arg title "$TITLE" --arg num "$NUMBER" --arg url "$ISSUE_URL" --arg text "$text" \
+                --arg curl "$COMMENT_URL" --arg who "$AUTHOR" '
+            def esc: gsub("&";"&amp;") | gsub("<";"&lt;") | gsub(">";"&gt;");
+            {text: ":speech_balloon: *Blocker detail:* <\($url)|#\($num) \($title|esc)>\n> \($text|esc) (<\($curl)|comment by \($who)>)"}' \
+            | curl -sf -X POST -H 'content-type: application/json' -d @- "$SLACK_WEBHOOK_URL"

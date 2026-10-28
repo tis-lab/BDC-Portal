@@ -1,0 +1,47 @@
+name: Blocked label sync
+
+# GitHub has no trigger for project board changes, so this polls every 15 minutes.
+# Board Status is the source of truth; the `Blocked` label mirrors it, and a newly
+# blocked issue is posted to Slack (SLACK_WEBHOOK_URL; skipped if not set).
+# Labels are written with the built-in GITHUB_TOKEN; PROJECT_TOKEN only reads the board.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would change without writing or posting"
+        type: boolean
+        default: false
+
+concurrency:
+  group: blocked-label-sync
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Sync Blocked label with board Status
+        run: node .github/scripts/blocked-label-sync.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ORG: tis-lab
+          PROJECT_NUMBER: "7"
+          DELAY_MINUTES: "15"   # wait this long after Status becomes Blocked so a Blocker: comment can be written
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          REPOS: >-
+            tis-lab/BDC-Portal
+            tis-lab/study-palette
