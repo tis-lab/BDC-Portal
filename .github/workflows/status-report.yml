@@ -11,7 +11,7 @@ on:
       since_days:
         description: "Days of activity to include"
         required: false
-        default: "4"
+        default: "5"
 
 concurrency:
   group: status-report
@@ -36,7 +36,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SINCE_DAYS: ${{ github.event.inputs.since_days || '4' }}
+          SINCE_DAYS: ${{ github.event.inputs.since_days || '5' }}
           REPOS: >-
             tis-lab/BDC-Portal
             tis-lab/study-palette
