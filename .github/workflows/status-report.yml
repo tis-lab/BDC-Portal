@@ -53,6 +53,9 @@ jobs:
         run: node .github/scripts/status-report.mjs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}   # reads the board Sprint field
+          ORG: tis-lab
+          PROJECT_NUMBER: "7"
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SINCE_DAYS: ${{ github.event.inputs.since_days || '5' }}
           REPOS: >-
