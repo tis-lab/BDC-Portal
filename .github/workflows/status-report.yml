@@ -5,7 +5,10 @@ name: Status report
 
 on:
   schedule:
-    - cron: "0 13 * * 2,4"   # Tue and Thu, 13:00 UTC (9am ET). Cadence is TBD in the SOP.
+    # Tue 9am PT and Thu 2pm PT. Cron is UTC-only, so each time is listed for both PDT and
+    # PST and the "Check Pacific time" step lets only the matching one through.
+    - cron: "0 16,17 * * 2"
+    - cron: "0 21,22 * * 4"
   workflow_dispatch:
     inputs:
       since_days:
@@ -25,13 +28,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Check Pacific time
+        id: gate
+        run: |
+          dow=$(TZ=America/Los_Angeles date +%u); hour=$(TZ=America/Los_Angeles date +%-H)
+          if [ "${{ github.event_name }}" != "schedule" ] \
+             || { [ "$dow" = 2 ] && [ "$hour" = 9 ]; } \
+             || { [ "$dow" = 4 ] && [ "$hour" = 14 ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not the scheduled Pacific hour (dow=$dow hour=$hour); skipping"
+          fi
 
-      - uses: actions/setup-node@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Build report
+        if: steps.gate.outputs.run == 'true'
         run: node .github/scripts/status-report.mjs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,6 +62,7 @@ jobs:
             tis-lab/bdc-dp-middleware
 
       - name: Commit report
+        if: steps.gate.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
