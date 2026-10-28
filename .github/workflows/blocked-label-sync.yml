@@ -7,7 +7,7 @@ name: Blocked label sync
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "4,19,34,49 * * * *"   # off-peak minutes: GitHub delays or drops runs at :00/:15/:30/:45
   workflow_dispatch:
     inputs:
       dry_run:
