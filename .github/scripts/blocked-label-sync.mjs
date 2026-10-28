@@ -2,7 +2,7 @@
 //   Status = Blocked for at least DELAY_MINUTES, no label -> add the label and post to Slack
 //     (the wait gives people time to write the "Blocker:" comment that explains it)
 //   Status set and not Blocked, has label -> remove the label
-// Only open issues in REPOS that are on the project board are touched. If Status is empty, nothing changes.
+// Only open issues in REPOS that are on the project board in the CURRENT SPRINT are touched. If Status is empty, nothing changes.
 const {
   GH_TOKEN, PROJECT_TOKEN, REPOS, SLACK_WEBHOOK_URL = "",
   ORG = "tis-lab", PROJECT_NUMBER = "7", DRY_RUN = "false", DELAY_MINUTES = "15",
@@ -52,12 +52,24 @@ async function blockerComment(repo, number) {
   return null;
 }
 
+// Current sprint = the latest sprint (board "Sprint" iteration field) that has started.
+const today = new Date().toISOString().slice(0, 10);
+const sprintField = (await gql(
+  `query($org:String!,$num:Int!){organization(login:$org){projectV2(number:$num){
+     field(name:"Sprint"){... on ProjectV2IterationField{configuration{iterations{id title startDate}}}}}}}`,
+  { org: ORG, num: Number(PROJECT_NUMBER) })).organization.projectV2.field;
+const sprint = sprintField?.configuration.iterations
+  .filter((it) => it.startDate <= today).sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
+if (!sprint) throw new Error('No current sprint found on the board\'s "Sprint" field');
+console.log(`current sprint: ${sprint.title} (from ${sprint.startDate})`);
+
 const items = [];
 for (let after = null, more = true; more;) {
   const page = (await gql(
     `query($org:String!,$num:Int!,$after:String){organization(login:$org){projectV2(number:$num){
        items(first:100,after:$after){pageInfo{hasNextPage endCursor}
          nodes{status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+               sprint:fieldValueByName(name:"Sprint"){... on ProjectV2ItemFieldIterationValue{iterationId}}
                content{... on Issue{url number title state repository{nameWithOwner}
                  labels(first:50){nodes{name}} assignees(first:10){nodes{login}}}}}}}}}`,
     { org: ORG, num: Number(PROJECT_NUMBER), after })).organization.projectV2.items;
@@ -81,6 +93,7 @@ const alerts = [];
 for (const it of items) {
   const c = it.content;
   if (!c?.url || c.state !== "OPEN" || !repos.has(c.repository.nameWithOwner.toLowerCase())) continue;
+  if (it.sprint?.iterationId !== sprint.id) continue;
   const status = it.status?.name ?? "";
   if (!status) continue;
   const repo = c.repository.nameWithOwner;
