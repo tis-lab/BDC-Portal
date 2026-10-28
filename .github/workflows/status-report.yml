@@ -5,9 +5,10 @@ name: Status report
 
 on:
   schedule:
-    # Tuesday 9am PT. Cron is UTC-only, so it is listed for both PDT (16:00) and PST (17:00)
-    # and the "Check Pacific time" step lets only the matching one through.
-    - cron: "0 16,17 * * 2"
+    # Tuesday 9am PT. GitHub often starts scheduled runs late (sometimes by hours), so there are
+    # several slots (16:07-20:07 UTC covers 9am-1pm PDT/PST). The first slot that passes the
+    # "Check Pacific time" step runs the report; later slots see today's report exists and skip.
+    - cron: "7 16,17,18,19,20 * * 2"
   workflow_dispatch:
     inputs:
       since_days:
@@ -27,19 +28,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check Pacific time
+      - uses: actions/checkout@v4
+
+      - name: Check Pacific time and whether today's report exists
         id: gate
         run: |
           dow=$(TZ=America/Los_Angeles date +%u); hour=$(TZ=America/Los_Angeles date +%-H)
-          if [ "${{ github.event_name }}" != "schedule" ] \
-             || { [ "$dow" = 2 ] && [ "$hour" = 9 ]; }; then
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$dow" = 2 ] && [ "$hour" -ge 9 ] && [ "$hour" -le 14 ] && [ ! -e "Reporting/reports/$(date -u +%F).md" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Not the scheduled Pacific hour (dow=$dow hour=$hour); skipping"
+            echo "Skipping (dow=$dow hour=$hour, or today's report already exists)"
           fi
-
-      - if: steps.gate.outputs.run == 'true'
-        uses: actions/checkout@v4
 
       - if: steps.gate.outputs.run == 'true'
         uses: actions/setup-node@v4
