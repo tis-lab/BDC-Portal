@@ -95,7 +95,7 @@ for (const repo of repos) {
       const [, repoName, num] = issueUrl.match(/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/);
       comments.push({
         user: c.user.login, url: c.html_url, issueUrl, ref: `${repoName}#${num}`,
-        snippet: clip(lines[0] ?? ""), blocker: blockerLine ? clip(blockerLine.trim(), 200) : null,
+        snippet: clip(lines.slice(0, 3).map((l) => l.replace(/^#+\s*/, "")).join(" "), 200), blocker: blockerLine ? clip(blockerLine.trim(), 200) : null,
       });
     }
     if (batch.length < 100) break;
