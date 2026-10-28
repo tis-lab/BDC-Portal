@@ -45,7 +45,7 @@ async function blockerComment(repo, number) {
   for (const c of comments.reverse()) {
     const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
     const text = c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
-      lines.find((l) => /\bblocked\b/i.test(l) && !RESOLVED.test(l));
+      (lines.some((l) => /\bblocked\b/i.test(l) && !RESOLVED.test(l)) ? lines.slice(0, 3).join(" ") : null);
     if (text) return { text: text.trim().slice(0, 300), url: c.html_url, user: c.user.login };
   }
   return null;
