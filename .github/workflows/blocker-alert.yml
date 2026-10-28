@@ -1,0 +1,24 @@
+name: Blocker alert
+
+# Posts to the group Slack channel as soon as an issue is labelled `blocked`.
+# Requires the SLACK_WEBHOOK_URL secret; does nothing if it is not set.
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  notify:
+    if: github.event.label.name == 'blocked'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TITLE: ${{ github.event.issue.title }}
+          URL: ${{ github.event.issue.html_url }}
+          WHO: ${{ github.event.sender.login }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "SLACK_WEBHOOK_URL not set; skipping"; exit 0; }
+          jq -n --arg t ":rotating_light: *Blocked:* <$URL|$TITLE> (flagged by $WHO)" '{text:$t}' \
+            | curl -sf -X POST -H 'content-type: application/json' -d @- "$SLACK_WEBHOOK_URL"
