@@ -8,3 +8,5 @@ kevinschaper     # Kevin Schaper
 amc-corey-cox    # Corey Cox
 madanucd         # Madan
 varun-divya      # Divya
+yn-huang         # Yinuo Huang
+chip2127         # Kaitlyn Sternat
