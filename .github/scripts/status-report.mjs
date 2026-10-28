@@ -102,7 +102,7 @@ for (const repo of repos) {
       if (!sprintUrls.has(c.html_url.split("#")[0])) continue;
       const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
       const blockerLine =
-        c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
+        c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1]?.replace(/^[*_\s]+/, "") ??
         lines.find((l) => /\bblocked\b/i.test(l) && !RESOLVED.test(l));
       const issueUrl = c.html_url.split("#")[0];
       const [, repoName, num] = issueUrl.match(/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/);
