@@ -40,6 +40,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           ORG: tis-lab
           PROJECT_NUMBER: "7"
+          DELAY_MINUTES: "15"   # wait this long after Status becomes Blocked so a Blocker: comment can be written
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           REPOS: >-
             tis-lab/BDC-Portal
