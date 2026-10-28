@@ -1,0 +1,72 @@
+name: Status report
+
+# Generates Reporting/reports/<date>.md from GitHub activity and posts blockers to Slack.
+# See Reporting/README.md.
+
+on:
+  schedule:
+    # Tuesday 9am PT. Cron is UTC-only, so it is listed for both PDT (16:00) and PST (17:00)
+    # and the "Check Pacific time" step lets only the matching one through.
+    - cron: "0 16,17 * * 2"
+  workflow_dispatch:
+    inputs:
+      since_days:
+        description: "Days of activity to include"
+        required: false
+        default: "7"
+
+concurrency:
+  group: status-report
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check Pacific time
+        id: gate
+        run: |
+          dow=$(TZ=America/Los_Angeles date +%u); hour=$(TZ=America/Los_Angeles date +%-H)
+          if [ "${{ github.event_name }}" != "schedule" ] \
+             || { [ "$dow" = 2 ] && [ "$hour" = 9 ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not the scheduled Pacific hour (dow=$dow hour=$hour); skipping"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build report
+        if: steps.gate.outputs.run == 'true'
+        run: node .github/scripts/status-report.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}   # reads the board Sprint field
+          ORG: tis-lab
+          PROJECT_NUMBER: "7"
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SINCE_DAYS: ${{ github.event.inputs.since_days || '7' }}
+          REPOS: >-
+            tis-lab/BDC-Portal
+            tis-lab/study-palette
+
+      - name: Commit report
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Reporting/reports
+          git diff --cached --quiet && exit 0
+          git commit -m "Status report $(date -u +%F)"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
