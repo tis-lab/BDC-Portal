@@ -14,15 +14,15 @@ It runs on a schedule and can be started by hand from the **Actions** tab (**Run
 ## What each section means
 
 Only issues on the [project board](https://github.com/orgs/tis-lab/projects/7) that are in the
-**current sprint** are listed. Reports run Tuesday 9am PT and Thursday 2pm PT.
+**current sprint** are listed. The report runs every Tuesday at 9am PT; status is reviewed live in the Thursday meeting.
 
 - **Done** – issues assigned to the person that were closed, and pull requests they wrote that
   were merged, from the start of the sprint until the report. Comments they wrote on those issues
   during the sprint are listed underneath.
-- **Next** – open issues assigned to the person, with comments they wrote in the last 5 days.
-- **Other comments** – comments (last 5 days) on sprint issues that are not assigned to them.
+- **Next** – open issues assigned to the person, with comments they wrote in the last 7 days.
+- **Other comments** – comments (last 7 days) on sprint issues that are not assigned to them.
 - **Blockers** – open sprint issues where the board **Status is Blocked** or that carry the
-  `Blocked` label, plus any comment (last 5 days) with a line starting `Blocker:` or containing
+  `Blocked` label, plus any comment (last 7 days) with a line starting `Blocker:` or containing
   the word "blocked". Each issue is listed once. A `Blocked` label with a later comment saying
   the blocker is resolved is marked with a warning.
 
