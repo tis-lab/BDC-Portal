@@ -35,7 +35,12 @@ async function search(q) {
   return (await gh(`/search/issues?per_page=100&q=${encodeURIComponent(q)}`)).items;
 }
 const short = (i) => `${i.repository_url.split("/").slice(-2).join("/")}#${i.number}`;
-const line = (i) => `- [${short(i)}](${i.html_url}) ${i.title}`;
+const line = (i) => {
+  const st = statusByUrl.get(i.html_url);
+  return `- [${short(i)}](${i.html_url}) ${i.title}${st ? ` [${st}]` : ""}`;
+};
+const statusOf = (url) => (statusByUrl.get(url) ?? "").toLowerCase();
+const finished = (st) => st === "complete" || st === "deprecated";
 const RESOLVED = /\b(unblocked|no longer blocked|not blocked|isn'?t blocked|resolved|addressed)\b/i;
 const daysAgo = (d) => Math.max(0, Math.floor((Date.now() - new Date(d)) / 86400000));
 const ago = (d) => { const n = daysAgo(d); return n === 0 ? "today" : n === 1 ? "1 day ago" : `${n} days ago`; };
@@ -131,7 +136,15 @@ for (const u of users) {
   const next = (await search(`${repoQ} assignee:${u} is:issue is:open`)).filter(inSprint);
   const hasLabel = (i) => i.labels.some((l) => l.name.toLowerCase() === "blocked");
   const hasStatus = (i) => (statusByUrl.get(i.html_url) ?? "").toLowerCase() === "blocked";
-  const blockedIssues = next.filter((i) => hasLabel(i) || hasStatus(i));
+  // Board Status is the source of truth. The label only counts when no Status is set.
+  const blockedIssues = next.filter((i) => hasStatus(i) || (hasLabel(i) && !statusOf(i.html_url)));
+  const check = new Map(); // issue ref -> hint: mentions "blocked" but board Status says otherwise
+  for (const i of next) {
+    const st = statusOf(i.html_url);
+    if (hasLabel(i) && st && st !== "blocked" && !finished(st)) {
+      check.set(short(i), { url: i.html_url, text: `has the \`Blocked\` label but Status is ${statusByUrl.get(i.html_url)}` });
+    }
+  }
 
   const withComments = (i, pool = mine) =>
     line(i) + "\n" +
@@ -167,12 +180,20 @@ for (const u of users) {
     note(short(i), i.html_url, i.title, t);
   }
   for (const c of mine.filter((c) => c.blocker)) {
-    const e = blocked.get(c.ref);
-    note(c.ref, c.issueUrl, e?.title ?? "", `${c.blocker} ([comment](${c.url}))`);
+    const st = statusOf(c.issueUrl);
+    if (st === "" || st === "blocked") {
+      const e = blocked.get(c.ref);
+      note(c.ref, c.issueUrl, e?.title ?? "", `${c.blocker} ([comment](${c.url}))`);
+    } else if (!finished(st) && !check.has(c.ref)) {
+      check.set(c.ref, { url: c.issueUrl, text: `a comment mentions blocked ("${clip(c.blocker, 100)}", [comment](${c.url})) but Status is ${statusByUrl.get(c.issueUrl)}` });
+    }
   }
   const blk = [...blocked].map(([ref, e]) =>
     `- [${ref}](${e.url})${e.title ? " " + e.title : ""}\n` + e.notes.map((n) => `  - ${n}`).join("\n"));
   md += blk.length ? blk.join("\n") + "\n" : "- None\n";
+  if (check.size) {
+    md += `\n**Check status** (update the Status if the work is still blocked)\n${[...check].map(([ref, h]) => `- ⚠️ [${ref}](${h.url}) ${h.text}`).join("\n")}\n`;
+  }
   if (blk.length) slack.push(`*Blockers – ${u}*\n${blk.join("\n")}`);
 }
 
