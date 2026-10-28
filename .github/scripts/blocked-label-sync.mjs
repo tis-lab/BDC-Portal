@@ -1,10 +1,11 @@
 // Keeps the `Blocked` label in step with the board Status, and alerts Slack when an issue becomes blocked.
-//   Status = Blocked, no label   -> add the label and post to Slack
+//   Status = Blocked for at least DELAY_MINUTES, no label -> add the label and post to Slack
+//     (the wait gives people time to write the "Blocker:" comment that explains it)
 //   Status set and not Blocked, has label -> remove the label
 // Only open issues in REPOS that are on the project board are touched. If Status is empty, nothing changes.
 const {
   GH_TOKEN, PROJECT_TOKEN, REPOS, SLACK_WEBHOOK_URL = "",
-  ORG = "tis-lab", PROJECT_NUMBER = "7", DRY_RUN = "false",
+  ORG = "tis-lab", PROJECT_NUMBER = "7", DRY_RUN = "false", DELAY_MINUTES = "15",
 } = process.env;
 const LABEL = "Blocked";
 const dry = DRY_RUN === "true";
@@ -46,7 +47,7 @@ async function blockerComment(repo, number) {
     const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
     const text = c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
       (lines.some((l) => /\bblocked\b/i.test(l) && !RESOLVED.test(l)) ? lines.slice(0, 3).join(" ") : null);
-    if (text) return { text: text.trim().slice(0, 300), url: c.html_url, user: c.user.login };
+    if (text) return { text: text.replace(/^[*_\s]+/, "").trim().slice(0, 300), url: c.html_url, user: c.user.login };
   }
   return null;
 }
@@ -64,6 +65,18 @@ for (let after = null, more = true; more;) {
   more = page.pageInfo.hasNextPage; after = page.pageInfo.endCursor;
 }
 
+// When the board Status last changed to Blocked on this issue (null if GitHub has no record).
+async function blockedSince(repo, number) {
+  const [owner, name] = repo.split("/");
+  const data = await gql(
+    `query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){
+       timelineItems(last:10,itemTypes:[PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]){nodes{
+         ... on ProjectV2ItemStatusChangedEvent{createdAt status}}}}}}`,
+    { o: owner, n: name, i: number });
+  const events = data.repository.issue.timelineItems.nodes.filter((e) => e.status?.toLowerCase() === "blocked");
+  return events.at(-1)?.createdAt ?? null;
+}
+
 const alerts = [];
 for (const it of items) {
   const c = it.content;
@@ -74,6 +87,11 @@ for (const it of items) {
   const hasLabel = c.labels.nodes.some((l) => l.name.toLowerCase() === LABEL.toLowerCase());
   const blocked = status.toLowerCase() === "blocked";
   if (blocked && !hasLabel) {
+    const since = await blockedSince(repo, c.number);
+    if (since && Date.now() - new Date(since) < Number(DELAY_MINUTES) * 60000) {
+      console.log(`waiting (Blocked since ${since}, alert after ${DELAY_MINUTES} min): ${repo}#${c.number}`);
+      continue;
+    }
     console.log(`${dry ? "[dry run] would add" : "add"} label: ${repo}#${c.number} (${c.title})`);
     if (!dry) await rest("POST", `/repos/${repo}/issues/${c.number}/labels`, { labels: [LABEL] });
     const why = await blockerComment(repo, c.number);
