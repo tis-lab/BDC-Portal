@@ -58,8 +58,6 @@ jobs:
           REPOS: >-
             tis-lab/BDC-Portal
             tis-lab/study-palette
-            tis-lab/bdc-dp-core
-            tis-lab/bdc-dp-middleware
 
       - name: Commit report
         if: steps.gate.outputs.run == 'true'
