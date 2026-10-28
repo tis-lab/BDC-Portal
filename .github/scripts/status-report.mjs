@@ -33,6 +33,9 @@ async function search(q) {
 }
 const short = (i) => `${i.repository_url.split("/").slice(-2).join("/")}#${i.number}`;
 const line = (i) => `- [${short(i)}](${i.html_url}) ${i.title}`;
+const RESOLVED = /\b(unblocked|no longer blocked|not blocked|isn'?t blocked|resolved|addressed)\b/i;
+const daysAgo = (d) => Math.max(0, Math.floor((Date.now() - new Date(d)) / 86400000));
+const ago = (d) => { const n = daysAgo(d); return n === 0 ? "today" : n === 1 ? "1 day ago" : `${n} days ago`; };
 const clip = (s, n = 160) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 // Comments written by contributors since the last report (issue and PR conversation comments).
@@ -45,7 +48,7 @@ for (const repo of repos) {
       const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
       const blockerLine =
         c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
-        lines.find((l) => /\bblocked\b/i.test(l));
+        lines.find((l) => /\bblocked\b/i.test(l) && !RESOLVED.test(l));
       const issueUrl = c.html_url.split("#")[0];
       const [, repoName, num] = issueUrl.match(/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/);
       comments.push({
@@ -62,15 +65,24 @@ const slack = [];
 
 for (const u of users) {
   const mine = comments.filter((c) => c.user === u);
-  const done = [
-    ...(await search(`${repoQ} assignee:${u} is:issue closed:>=${sinceDate}`)),
-    ...(await search(`${repoQ} author:${u} is:pr is:merged merged:>=${sinceDate}`)),
-  ];
+  const doneIssues = await search(`${repoQ} assignee:${u} is:issue closed:>=${sinceDate}`);
+  const donePrs = await search(`${repoQ} author:${u} is:pr is:merged merged:>=${sinceDate}`);
+  // A merged PR that closes one of the listed issues is shown under that issue, not twice.
+  for (const pr of donePrs) {
+    const m = (pr.body ?? "").matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi);
+    for (const [, r, n] of m) {
+      const repo = r ?? pr.repository_url.split("/").slice(-2).join("/");
+      const issue = doneIssues.find((i) => short(i) === `${repo}#${n}`);
+      if (issue) { (issue.prs ??= []).push(pr); pr.folded = true; }
+    }
+  }
+  const done = [...new Map([...doneIssues, ...donePrs.filter((p) => !p.folded)].map((i) => [i.html_url, i])).values()];
   const next = await search(`${repoQ} assignee:${u} is:issue is:open`);
   const blockedIssues = next.filter((i) => i.labels.some((l) => l.name.toLowerCase() === "blocked"));
 
   const withComments = (i) =>
     line(i) + "\n" +
+    (i.prs ?? []).map((p) => `  - merged PR: [${short(p)}](${p.html_url}) ${p.title}\n`).join("") +
     mine.filter((c) => c.issueUrl === i.html_url).map((c) => `  - 💬 ${c.snippet} ([comment](${c.url}))`).map((s) => s + "\n").join("");
   const listed = new Set([...done, ...next].map((i) => i.html_url));
   const other = mine.filter((c) => !listed.has(c.issueUrl));
@@ -81,10 +93,30 @@ for (const u of users) {
     md += `\n**Other comments**\n${other.map((c) => `- ${c.ref}: ${c.snippet} ([comment](${c.url}))`).join("\n")}\n`;
   }
   md += `\n**Blockers**\n`;
-  const blk = [
-    ...blockedIssues.map((i) => `- [${short(i)}](${i.html_url}) ${i.title} (labelled \`Blocked\`)`),
-    ...mine.filter((c) => c.blocker).map((c) => `- ${c.ref}: ${c.blocker} ([comment](${c.url}))`),
-  ];
+  const blocked = new Map(); // issue ref -> { url, title, notes[] }
+  const note = (ref, url, title, text) => {
+    const e = blocked.get(ref) ?? { url, title, notes: [] };
+    e.notes.push(text);
+    blocked.set(ref, e);
+  };
+  for (const i of blockedIssues) {
+    const repo = i.repository_url.split("/").slice(-2).join("/");
+    const events = await gh(`/repos/${repo}/issues/${i.number}/events?per_page=100`);
+    const labeledAt = events.filter((e) => e.event === "labeled" && e.label?.name.toLowerCase() === "blocked").at(-1)?.created_at;
+    const after = labeledAt ? await gh(`/repos/${repo}/issues/${i.number}/comments?since=${labeledAt}&per_page=100`) : [];
+    const last = after.filter((c) => new Date(c.created_at) > new Date(labeledAt)).at(-1);
+    const hint = after.find((c) => new Date(c.created_at) > new Date(labeledAt) && RESOLVED.test(c.body));
+    let t = labeledAt ? `labelled \`Blocked\` ${ago(labeledAt)}` : "labelled `Blocked`";
+    t += last ? `; last comment by @${last.user.login} ${ago(last.created_at)}` : "; no comments since";
+    if (hint) t += ` — ⚠️ possibly resolved: "${clip(hint.body.split("\n").find((l) => RESOLVED.test(l)) ?? "", 100)}" ([comment](${hint.html_url}))`;
+    note(short(i), i.html_url, i.title, t);
+  }
+  for (const c of mine.filter((c) => c.blocker)) {
+    const e = blocked.get(c.ref);
+    note(c.ref, c.issueUrl, e?.title ?? "", `${c.blocker} ([comment](${c.url}))`);
+  }
+  const blk = [...blocked].map(([ref, e]) =>
+    `- [${ref}](${e.url})${e.title ? " " + e.title : ""}\n` + e.notes.map((n) => `  - ${n}`).join("\n"));
   md += blk.length ? blk.join("\n") + "\n" : "- None\n";
   if (blk.length) slack.push(`*Blockers – ${u}*\n${blk.join("\n")}`);
 }
