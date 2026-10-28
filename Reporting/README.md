@@ -13,21 +13,25 @@ It runs on a schedule and can be started by hand from the **Actions** tab (**Run
 
 ## What each section means
 
-Covers the last 5 days (the report runs Tuesday 9am PT and Thursday 2pm PT).
+Only issues on the [project board](https://github.com/orgs/tis-lab/projects/7) that are in the
+**current sprint** are listed. Reports run Tuesday 9am PT and Thursday 2pm PT.
 
 - **Done** – issues assigned to the person that were closed, and pull requests they wrote that
-  were merged. Comments they wrote on those issues are listed underneath.
-- **Next** – open issues assigned to the person, with their recent comments underneath.
-- **Other comments** – comments they wrote on issues that are not assigned to them.
-- **Blockers** – open issues labelled `Blocked`, plus any comment they wrote that has a line
-  starting with `Blocker:` or that contains the word "blocked".
+  were merged, from the start of the sprint until the report. Comments they wrote on those issues
+  during the sprint are listed underneath.
+- **Next** – open issues assigned to the person, with comments they wrote in the last 5 days.
+- **Other comments** – comments (last 5 days) on sprint issues that are not assigned to them.
+- **Blockers** – open sprint issues where the board **Status is Blocked** or that carry the
+  `Blocked` label, plus any comment (last 5 days) with a line starting `Blocker:` or containing
+  the word "blocked". Each issue is listed once. A `Blocked` label with a later comment saying
+  the blocker is resolved is marked with a warning.
 
-Only activity found in GitHub is listed; nothing is inferred. Work that isn't in GitHub
-(a talk, a meeting) is not captured. Issues with no assignee do not appear.
+Only activity found in GitHub is listed; nothing is inferred. Issues with no assignee, or not in
+the current sprint, do not appear.
 
 ## How to flag a blocker
 
-Either label the issue `Blocked`, or comment on it with a line such as:
+Set the board Status to `Blocked`, add the `Blocked` label, or comment on it with a line such as:
 
 ```
 Blocker: waiting on @ShahimEssaid for API access
@@ -45,7 +49,7 @@ Blockers are also posted to the group Slack channel (see below).
 |---|---|
 | `SLACK_WEBHOOK_URL` | Posting blockers to Slack (Slack app → Incoming Webhooks → pick the group channel). Optional: without it, Slack posting is skipped. |
 
-The workflow reads only public repositories with the built-in `GITHUB_TOKEN`.
+The workflow reads issues with the built-in `GITHUB_TOKEN` and the project board (sprint and status) with the existing `PROJECT_TOKEN` secret.
 
 > **This repository is public.** Reports and blocker text are visible to anyone.
 > Do not put credentials, participant data, or sensitive discussion in a blocker.
