@@ -22,12 +22,33 @@ async function gql(query, variables) {
   return body.data;
 }
 async function rest(method, path, body) {
+  const data = await restJson(method, path, body);
+  return data;
+}
+async function restJson(method, path, body) {
   const res = await fetch(`https://api.github.com${path}`, {
     method,
     headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${await res.text()}`);
+  return res.status === 204 ? null : res.json().catch(() => null);
+}
+
+// Most recent comment (last 14 days) that says what the blocker is: a line starting "Blocker:",
+// or a line containing the word "blocked" (unless it says the blocker is resolved).
+const RESOLVED = /\b(unblocked|no longer blocked|not blocked|isn'?t blocked|resolved|addressed)\b/i;
+const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+async function blockerComment(repo, number) {
+  const since = new Date(Date.now() - 14 * 86400000).toISOString();
+  const comments = (await restJson("GET", `/repos/${repo}/issues/${number}/comments?since=${since}&per_page=100`)) ?? [];
+  for (const c of comments.reverse()) {
+    const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
+    const text = c.body.match(/^[ \t>*_-]*blockers?\**\s*:\s*(.+)$/im)?.[1] ??
+      lines.find((l) => /\bblocked\b/i.test(l) && !RESOLVED.test(l));
+    if (text) return { text: text.trim().slice(0, 300), url: c.html_url, user: c.user.login };
+  }
+  return null;
 }
 
 const items = [];
@@ -55,8 +76,12 @@ for (const it of items) {
   if (blocked && !hasLabel) {
     console.log(`${dry ? "[dry run] would add" : "add"} label: ${repo}#${c.number} (${c.title})`);
     if (!dry) await rest("POST", `/repos/${repo}/issues/${c.number}/labels`, { labels: [LABEL] });
-    alerts.push(`:rotating_light: *Blocked:* <${c.url}|${repo}#${c.number} ${c.title}>` +
-      (c.assignees.nodes.length ? ` (${c.assignees.nodes.map((a) => "@" + a.login).join(", ")})` : ""));
+    const why = await blockerComment(repo, c.number);
+    console.log(why ? `  blocker comment by ${why.user}: ${why.text}` : "  no blocker comment found");
+    alerts.push(`:rotating_light: *Blocked:* <${c.url}|${repo}#${c.number} ${esc(c.title)}>` +
+      (c.assignees.nodes.length ? ` (${c.assignees.nodes.map((a) => "@" + a.login).join(", ")})` : "") +
+      (why ? `\n> ${esc(why.text)} (<${why.url}|comment by ${why.user}>)`
+           : `\n> _No blocker comment yet. Add a comment starting \`Blocker:\` saying what you are waiting on._`));
   } else if (!blocked && hasLabel) {
     console.log(`${dry ? "[dry run] would remove" : "remove"} label (Status is ${status}): ${repo}#${c.number}`);
     if (!dry) await rest("DELETE", `/repos/${repo}/issues/${c.number}/labels/${encodeURIComponent(LABEL)}`);
