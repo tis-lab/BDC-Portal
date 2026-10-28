@@ -67,25 +67,33 @@ const sprintEnd = new Date(Date.parse(sprint.startDate) + (sprint.duration - 1) 
 
 // URLs of every issue/PR that is on the board and assigned to the current sprint.
 const sprintUrls = new Set();
+const statusByUrl = new Map(); // issue/PR url -> board Status ("Blocked", "In Progress", ...)
 for (let after = null, more = true; more;) {
   const page = (await gql(
     `query($org:String!,$num:Int!,$after:String){organization(login:$org){projectV2(number:$num){
        items(first:100,after:$after){pageInfo{hasNextPage endCursor}
          nodes{sprint:fieldValueByName(name:"Sprint"){... on ProjectV2ItemFieldIterationValue{iterationId}}
+               status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
                content{... on Issue{url} ... on PullRequest{url}}}}}}}`,
     { org: ORG, num, after })).organization.projectV2.items;
-  for (const n of page.nodes) if (n.sprint?.iterationId === sprint.id && n.content?.url) sprintUrls.add(n.content.url);
+  for (const n of page.nodes) {
+    if (n.sprint?.iterationId !== sprint.id || !n.content?.url) continue;
+    sprintUrls.add(n.content.url);
+    if (n.status?.name) statusByUrl.set(n.content.url, n.status.name);
+  }
   more = page.pageInfo.hasNextPage; after = page.pageInfo.endCursor;
 }
 const inSprint = (i) => sprintUrls.has(i.html_url);
+const sprintStart = new Date(`${sprint.startDate}T00:00:00Z`);
+const commentsSince = sprintStart < since ? sprintStart : since; // Done shows comments from the sprint start
 
 // Comments written by contributors since the last report (issue and PR conversation comments).
 const comments = [];
 for (const repo of repos) {
-  for (let page = 1; page <= 10; page++) {
-    const batch = await gh(`/repos/${repo}/issues/comments?since=${since.toISOString()}&per_page=100&page=${page}`);
+  for (let page = 1; page <= 20; page++) {
+    const batch = await gh(`/repos/${repo}/issues/comments?since=${commentsSince.toISOString()}&per_page=100&page=${page}`);
     for (const c of batch) {
-      if (!users.includes(c.user.login) || new Date(c.created_at) < since) continue;
+      if (!users.includes(c.user.login) || new Date(c.created_at) < commentsSince) continue;
       if (!sprintUrls.has(c.html_url.split("#")[0])) continue;
       const lines = c.body.split("\n").map((l) => l.trim()).filter(Boolean);
       const blockerLine =
@@ -94,7 +102,7 @@ for (const repo of repos) {
       const issueUrl = c.html_url.split("#")[0];
       const [, repoName, num] = issueUrl.match(/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/);
       comments.push({
-        user: c.user.login, url: c.html_url, issueUrl, ref: `${repoName}#${num}`,
+        user: c.user.login, createdAt: new Date(c.created_at), url: c.html_url, issueUrl, ref: `${repoName}#${num}`,
         snippet: clip(lines.slice(0, 3).map((l) => l.replace(/^#+\s*/, "")).join(" "), 200), blocker: blockerLine ? clip(blockerLine.trim(), 200) : null,
       });
     }
@@ -102,13 +110,14 @@ for (const repo of repos) {
   }
 }
 
-let md = `# Status report ${today}\n\nCurrent sprint: **${sprint.title}** (${sprint.startDate} to ${sprintEnd}). Only issues on the [project board](https://github.com/orgs/${ORG}/projects/${PROJECT_NUMBER}) in this sprint are listed.\n\nActivity since ${sinceDate} in ${repos.map((r) => `\`${r}\``).join(", ")}.\n`;
+let md = `# Status report ${today}\n\nCurrent sprint: **${sprint.title}** (${sprint.startDate} to ${sprintEnd}). Only issues on the [project board](https://github.com/orgs/${ORG}/projects/${PROJECT_NUMBER}) in this sprint are listed.\n\nDone covers ${sprint.startDate} to today (sprint start); Next, other comments and blockers cover the last ${SINCE_DAYS} days (since ${sinceDate}). Repos: ${repos.map((r) => `\`${r}\``).join(", ")}.\n`;
 const slack = [];
 
 for (const u of users) {
-  const mine = comments.filter((c) => c.user === u);
-  const doneIssues = (await search(`${repoQ} assignee:${u} is:issue closed:>=${sinceDate}`)).filter(inSprint);
-  const donePrs = await search(`${repoQ} author:${u} is:pr is:merged merged:>=${sinceDate}`);
+  const sprintComments = comments.filter((c) => c.user === u);            // sprint start -> today
+  const mine = sprintComments.filter((c) => c.createdAt >= since);       // recent window
+  const doneIssues = (await search(`${repoQ} assignee:${u} is:issue closed:>=${sprint.startDate}`)).filter(inSprint);
+  const donePrs = await search(`${repoQ} author:${u} is:pr is:merged merged:>=${sprint.startDate}`);
   // A merged PR that closes one of the listed issues is shown under that issue, not twice.
   for (const pr of donePrs) {
     const m = (pr.body ?? "").matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi);
@@ -120,16 +129,18 @@ for (const u of users) {
   }
   const done = [...new Map([...doneIssues, ...donePrs.filter((p) => !p.folded && inSprint(p))].map((i) => [i.html_url, i])).values()];
   const next = (await search(`${repoQ} assignee:${u} is:issue is:open`)).filter(inSprint);
-  const blockedIssues = next.filter((i) => i.labels.some((l) => l.name.toLowerCase() === "blocked"));
+  const hasLabel = (i) => i.labels.some((l) => l.name.toLowerCase() === "blocked");
+  const hasStatus = (i) => (statusByUrl.get(i.html_url) ?? "").toLowerCase() === "blocked";
+  const blockedIssues = next.filter((i) => hasLabel(i) || hasStatus(i));
 
-  const withComments = (i) =>
+  const withComments = (i, pool = mine) =>
     line(i) + "\n" +
     (i.prs ?? []).map((p) => `  - merged PR: [${short(p)}](${p.html_url}) ${p.title}\n`).join("") +
-    mine.filter((c) => c.issueUrl === i.html_url).map((c) => `  - 💬 ${c.snippet} ([comment](${c.url}))`).map((s) => s + "\n").join("");
+    pool.filter((c) => c.issueUrl === i.html_url).map((c) => `  - 💬 ${c.snippet} ([comment](${c.url}))`).map((s) => s + "\n").join("");
   const listed = new Set([...done, ...next].map((i) => i.html_url));
   const other = mine.filter((c) => !listed.has(c.issueUrl));
 
-  md += `\n## @${u}\n\n**Done**\n${done.length ? done.map(withComments).join("").trimEnd() : "- _nothing closed or merged_"}\n`;
+  md += `\n## @${u}\n\n**Done**\n${done.length ? done.map((i) => withComments(i, sprintComments)).join("").trimEnd() : "- _nothing closed or merged_"}\n`;
   md += `\n**Next**\n${next.length ? next.map(withComments).join("").trimEnd() : "- _no open assigned issues_"}\n`;
   if (other.length) {
     md += `\n**Other comments**\n${other.map((c) => `- ${c.ref}: ${c.snippet} ([comment](${c.url}))`).join("\n")}\n`;
@@ -142,6 +153,8 @@ for (const u of users) {
     blocked.set(ref, e);
   };
   for (const i of blockedIssues) {
+    if (hasStatus(i)) note(short(i), i.html_url, i.title, "board Status is `Blocked`");
+    if (!hasLabel(i)) continue;
     const repo = i.repository_url.split("/").slice(-2).join("/");
     const events = await gh(`/repos/${repo}/issues/${i.number}/events?per_page=100`);
     const labeledAt = events.filter((e) => e.event === "labeled" && e.label?.name.toLowerCase() === "blocked").at(-1)?.created_at;
