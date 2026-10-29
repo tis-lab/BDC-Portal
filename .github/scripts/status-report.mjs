@@ -17,6 +17,14 @@ const repos = REPOS.split(/\s+/).filter(Boolean);
 const users = readFileSync("Reporting/contributors.txt", "utf8")
   .split("\n").map((l) => l.replace(/#.*/, "").trim()).filter(Boolean);
 
+// First names from the "# Name" comments in contributors.txt, for the Slack message.
+const firstNames = Object.fromEntries(
+  readFileSync("Reporting/contributors.txt", "utf8").split("\n")
+    .map((l) => l.match(/^(\S+)\s*#\s*(\S+)/)).filter(Boolean).map((m) => [m[1], m[2]]));
+// Slack mrkdwn: escape &, <, > and turn **bold** into *bold*.
+const slackEsc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const slackText = (t) => slackEsc(t).replace(/\*\*(.+?)\*\*/g, "*$1*");
+
 const since = new Date(Date.now() - Number(SINCE_DAYS) * 86400000);
 const sinceDate = since.toISOString().slice(0, 10);
 const today = new Date().toISOString().slice(0, 10);
@@ -117,6 +125,7 @@ for (const repo of repos) {
 
 let md = `# Status report ${today}\n\nCurrent sprint: **${sprint.title}** (${sprint.startDate} to ${sprintEnd}). Only issues on the [project board](https://github.com/orgs/${ORG}/projects/${PROJECT_NUMBER}) in this sprint are listed.\n\nDone covers ${sprint.startDate} to today (sprint start); Next, other comments and blockers cover the last ${SINCE_DAYS} days (since ${sinceDate}). Repos: ${repos.map((r) => `\`${r}\``).join(", ")}.\n`;
 const slack = [];
+const slackIssues = new Map(); // issue ref -> { url, title, people[], quotes:Set } (each blocked issue once)
 
 for (const u of users) {
   const sprintComments = comments.filter((c) => c.user === u);            // sprint start -> today
@@ -160,6 +169,7 @@ for (const u of users) {
   }
   md += `\n**Blockers**\n`;
   const blocked = new Map(); // issue ref -> { url, title, notes[] }
+  const quotes = new Map(); // issue ref -> blocker comment texts (for Slack)
   const note = (ref, url, title, text) => {
     const e = blocked.get(ref) ?? { url, title, notes: [] };
     e.notes.push(text);
@@ -184,6 +194,7 @@ for (const u of users) {
     if (st === "" || st === "blocked") {
       const e = blocked.get(c.ref);
       note(c.ref, c.issueUrl, e?.title ?? "", `${c.blocker} ([comment](${c.url}))`);
+      quotes.set(c.ref, [...(quotes.get(c.ref) ?? []), c.blocker]);
     } else if (!finished(st) && !check.has(c.ref)) {
       check.set(c.ref, { url: c.issueUrl, text: `a comment mentions blocked ("${clip(c.blocker, 100)}", [comment](${c.url})) but Status is ${statusByUrl.get(c.issueUrl)}` });
     }
@@ -194,7 +205,18 @@ for (const u of users) {
   if (check.size) {
     md += `\n**Check status** (update the Status if the work is still blocked)\n${[...check].map(([ref, h]) => `- ⚠️ [${ref}](${h.url}) ${h.text}`).join("\n")}\n`;
   }
-  if (blk.length) slack.push(`*Blockers – ${u}*\n${blk.join("\n")}`);
+  for (const [ref, e] of blocked) {
+    const s = slackIssues.get(ref) ?? { url: e.url, title: "", people: [], quotes: new Set() };
+    s.title ||= e.title;
+    s.people.push(firstNames[u] ?? u);
+    for (const q of quotes.get(ref) ?? []) s.quotes.add(q);
+    slackIssues.set(ref, s);
+  }
+}
+
+for (const [ref, e] of slackIssues) {
+  slack.push(`• <${e.url}|${slackEsc(e.title || ref)}> (${e.people.join(", ")})` +
+    [...e.quotes].map((t) => `\n> ${slackText(t)}`).join(""));
 }
 
 mkdirSync("Reporting/reports", { recursive: true });
@@ -208,7 +230,7 @@ if (slack.length && SLACK_WEBHOOK_URL) {
   const res = await fetch(SLACK_WEBHOOK_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: `:rotating_light: *BDC Portal blockers (${today})*\n\n${slack.join("\n\n")}\n\n${link}` }),
+    body: JSON.stringify({ text: `:rotating_light: *BDC Portal blockers (${today})*\n\n${slack.join("\n")}\n\n${link}` }),
   });
   console.log(`slack: ${res.status}`);
 } else if (slack.length) {
