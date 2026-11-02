@@ -52,13 +52,14 @@ async function blockerComment(repo, number) {
   return null;
 }
 
-// Current sprint = the latest sprint (board "Sprint" iteration field) that has started.
+// Current sprint = the latest sprint (board "Sprint" iteration field) that has started. GitHub moves a sprint to
+// completedIterations once it ends, so look in both lists; between two sprints this keeps the sprint that just ended.
 const today = new Date().toISOString().slice(0, 10);
 const sprintField = (await gql(
   `query($org:String!,$num:Int!){organization(login:$org){projectV2(number:$num){
-     field(name:"Sprint"){... on ProjectV2IterationField{configuration{iterations{id title startDate}}}}}}}`,
+     field(name:"Sprint"){... on ProjectV2IterationField{configuration{iterations{id title startDate} completedIterations{id title startDate}}}}}}}`,
   { org: ORG, num: Number(PROJECT_NUMBER) })).organization.projectV2.field;
-const sprint = sprintField?.configuration.iterations
+const sprint = [...(sprintField?.configuration.iterations ?? []), ...(sprintField?.configuration.completedIterations ?? [])]
   .filter((it) => it.startDate <= today).sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
 if (!sprint) throw new Error('No current sprint found on the board\'s "Sprint" field');
 console.log(`current sprint: ${sprint.title} (from ${sprint.startDate})`);
