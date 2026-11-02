@@ -69,11 +69,12 @@ async function gql(query, variables = {}) {
 const num = Number(PROJECT_NUMBER);
 const sprintField = (await gql(
   `query($org:String!,$num:Int!){organization(login:$org){projectV2(number:$num){
-     field(name:"Sprint"){... on ProjectV2IterationField{configuration{iterations{id title startDate duration}}}}}}}`,
+     field(name:"Sprint"){... on ProjectV2IterationField{configuration{iterations{id title startDate duration} completedIterations{id title startDate duration}}}}}}}`,
   { org: ORG, num })).organization.projectV2.field;
 if (!sprintField) throw new Error('Project has no "Sprint" iteration field');
-// Current sprint = the latest one that has started (covers the gap between two sprints).
-const sprint = sprintField.configuration.iterations
+// Current sprint = the latest one that has started. GitHub moves a sprint to completedIterations once it ends,
+// so look in both lists; between two sprints this keeps the sprint that just ended.
+const sprint = [...sprintField.configuration.iterations, ...sprintField.configuration.completedIterations]
   .filter((it) => it.startDate <= today).sort((a, b) => b.startDate.localeCompare(a.startDate))[0];
 if (!sprint) throw new Error("No sprint has started yet");
 const sprintEnd = new Date(Date.parse(sprint.startDate) + (sprint.duration - 1) * 86400000).toISOString().slice(0, 10);
