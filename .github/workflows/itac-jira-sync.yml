@@ -2,7 +2,8 @@ name: ITAC Jira sync
 
 # Runs two independent scripts against https://github.com/orgs/tis-lab/projects/7
 #   1. itac-jira-sync.mjs       normalizes ITAC Jira ID, sets ITAC Jira URL and ITAC Jira status
-#   2. notify-project-item.mjs  notifies NOTIFY_USER about issues newly added to the project
+#   2. notify-project-item.mjs  notifies NOTIFY_USER about issues added to the project and
+#                               changes to ITAC Jira Responsible, Sprint, Quarter Start/End and story points
 # GitHub Actions has no trigger for project field or item changes, so this
 # runs on a schedule. Both scripts are idempotent: repeated runs make no
 # duplicate changes or duplicate notifications.
@@ -57,14 +58,41 @@ jobs:
           ITEM_ID: ${{ github.event.inputs.item_id || github.event.client_payload.item_id || '' }}
           DRY_RUN: ${{ github.event.inputs.itac_dry_run || 'false' }}
 
+      # Snapshot of tracked field values from the previous run, used to detect
+      # changes. If the cache is ever lost, the next run records a fresh
+      # baseline: changes in that one window are missed, never misreported.
+      - name: Restore notification state
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .state/project-7-notify.json
+          key: project-7-notify-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: project-7-notify-
+
       # Runs even if the ITAC step failed; the run is still marked failed.
-      - name: Notify about issues added to the project
+      - name: Notify about project additions and field changes
         if: ${{ !cancelled() }}
         run: node .github/scripts/notify-project-item.mjs
         env:
           PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTIFY_USER: ${{ vars.NOTIFY_USER }}
+          NOTIFY_MODE: digest            # "digest" = one comment per run on a notifications issue; "issue" = comment on each issue
+          STATE_FILE: .state/project-7-notify.json
+          FIELD_RESPONSIBLE: "ITAC Jira Responsible"
+          FIELD_SPRINT: "Sprint"
+          FIELD_Q_START: "Quarter Start"
+          FIELD_Q_END: "Quarter End"
+          FIELD_POINTS: "Jira Story Points (# Days)"
+          FIELD_JIRA_URL: "ITAC Jira URL"      # shown in notifications, not tracked
+          FIELD_JIRA_STATUS: "ITAC Jira"       # used to flag a possibly stale Jira link
           LOOKBACK_HOURS: "24"
           MAX_CHARS: "2000"
           DRY_RUN: ${{ github.event.inputs.notify_dry_run || 'false' }}
+
+      - name: Save notification state
+        if: ${{ !cancelled() && hashFiles('.state/project-7-notify.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .state/project-7-notify.json
+          key: project-7-notify-${{ github.run_id }}-${{ github.run_attempt }}
