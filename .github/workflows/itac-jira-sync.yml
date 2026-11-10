@@ -1,10 +1,11 @@
 name: ITAC Jira sync
 
 # Runs two independent scripts against https://github.com/orgs/tis-lab/projects/7
-#   1. itac-jira-sync.mjs       normalizes ITAC Jira ID, sets ITAC Jira URL and ITAC Jira status,
-#                               and sets ITAC Jira Responsible from the first assignee
+#   1. itac-jira-sync.mjs       normalizes ITAC Jira ID, sets ITAC Jira URL and ITAC Jira status
 #   2. notify-project-item.mjs  notifies NOTIFY_USER about issues added to the project and
-#                               changes to ITAC Jira Responsible, Sprint, Quarter Start/End and story points
+#                               changes to ITAC Jira Responsible, Sprint, Quarter Start/End and story points,
+#                               and sets ITAC Jira Responsible when an item's first assignee changes
+#                               or the field is empty
 # GitHub Actions has no trigger for project field or item changes, so this
 # runs on a schedule. Both scripts are idempotent: repeated runs make no
 # duplicate changes or duplicate notifications.
@@ -58,22 +59,6 @@ jobs:
           PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           ITEM_ID: ${{ github.event.inputs.item_id || github.event.client_payload.item_id || '' }}
           DRY_RUN: ${{ github.event.inputs.itac_dry_run || 'false' }}
-          FIELD_RESPONSIBLE: "ITAC Jira Responsible"
-          # Sets "ITAC Jira Responsible" from the issue's first assignee (GitHub login, case-insensitive).
-          # Items with no assignee, or an assignee not listed here, are left unchanged.
-          RESPONSIBLE_MAP: |
-            {
-              "rbrad8158":     "Robert Bradford (Security / PI)",
-              "awalde003":     "Robert Bradford (Security / PI)",
-              "amc-corey-cox": "Corey Cox (Data / BDCHM)",
-              "madanucd":      "Corey Cox (Data / BDCHM)",
-              "kevinschaper":  "Corey Cox (Data / BDCHM)",
-              "yn-huang":      "Yinuo Huang (Direct)",
-              "RudraPatel20":  "Rudra Patel (Java / Middleware)",
-              "ShahimEssaid":  "Rudra Patel (Java / Middleware)",
-              "chip2127":      "Kaitlyn Sternat (PM / Comm)",
-              "varun-divya":   "Divya Varun (Direct)"
-            }
 
       # Snapshot of tracked field values from the previous run, used to detect
       # changes. If the cache is ever lost, the next run records a fresh
@@ -106,6 +91,24 @@ jobs:
           LOOKBACK_HOURS: "24"
           MAX_CHARS: "2000"
           DRY_RUN: ${{ github.event.inputs.notify_dry_run || 'false' }}
+          # Set "ITAC Jira Responsible" from the first assignee (GitHub login, case-insensitive)
+          # when the assignee changes or the field is empty, only on issues with a label in
+          # RESPONSIBLE_LABELS (case-insensitive). A filled-in field is otherwise left alone, and
+          # nothing happens if the issue lacks such a label or the assignee is not listed here.
+          RESPONSIBLE_LABELS: '["Story", "Story (Non-dev)", "Story Sub Task"]'
+          RESPONSIBLE_MAP: |
+            {
+              "rbrad8158":     "Robert Bradford (Security / PI)",
+              "awalde003":     "Robert Bradford (Security / PI)",
+              "amc-corey-cox": "Corey Cox (Data / BDCHM)",
+              "madanucd":      "Corey Cox (Data / BDCHM)",
+              "kevinschaper":  "Corey Cox (Data / BDCHM)",
+              "yn-huang":      "Yinuo Huang (Direct)",
+              "RudraPatel20":  "Rudra Patel (Java / Middleware)",
+              "ShahimEssaid":  "Rudra Patel (Java / Middleware)",
+              "chip2127":      "Kaitlyn Sternat (PM / Comm)",
+              "varun-divya":   "Divya Varun (Direct)"
+            }
 
       - name: Save notification state
         if: ${{ !cancelled() && hashFiles('.state/project-7-notify.json') != '' }}
