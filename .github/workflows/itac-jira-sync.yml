@@ -2,7 +2,7 @@ name: ITAC Jira sync
 
 # Runs two independent scripts against https://github.com/orgs/tis-lab/projects/7
 #   1. itac-jira-sync.mjs       normalizes ITAC Jira ID, sets ITAC Jira URL and ITAC Jira status,
-#                               and sets ITAC Jira Responsible from the first assignee
+#                               and sets ITAC Jira Responsible from the first assignee (Story issues only)
 #   2. notify-project-item.mjs  notifies NOTIFY_USER about issues added to the project and
 #                               changes to ITAC Jira Responsible, Sprint, Quarter Start/End and story points
 # GitHub Actions has no trigger for project field or item changes, so this
@@ -59,8 +59,10 @@ jobs:
           ITEM_ID: ${{ github.event.inputs.item_id || github.event.client_payload.item_id || '' }}
           DRY_RUN: ${{ github.event.inputs.itac_dry_run || 'false' }}
           FIELD_RESPONSIBLE: "ITAC Jira Responsible"
-          # Sets "ITAC Jira Responsible" from the issue's first assignee (GitHub login, case-insensitive).
-          # Items with no assignee, or an assignee not listed here, are left unchanged.
+          # Sets "ITAC Jira Responsible" from the issue's first assignee (GitHub login, case-insensitive),
+          # only on issues with at least one label in RESPONSIBLE_LABELS (case-insensitive).
+          # Items without such a label, with no assignee, or with an assignee not listed here are left unchanged.
+          RESPONSIBLE_LABELS: '["Story", "Story (Non-dev)", "Story Sub Task"]'
           RESPONSIBLE_MAP: |
             {
               "rbrad8158":     "Robert Bradford (Security / PI)",

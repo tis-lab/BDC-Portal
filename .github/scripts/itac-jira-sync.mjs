@@ -1,6 +1,7 @@
 // Normalizes "ITAC Jira ID", sets "ITAC Jira URL", and marks "ITAC Jira" Yes/Error
 // on items of an org-level GitHub Project (v2). Also sets "ITAC Jira Responsible"
-// from the item's first assignee, using RESPONSIBLE_MAP (JSON: GitHub login -> option name).
+// from the item's first assignee, using RESPONSIBLE_MAP (JSON: GitHub login -> option name),
+// only on items carrying a label from RESPONSIBLE_LABELS (JSON array of label names).
 import { appendFileSync } from "node:fs";
 
 const TOKEN = process.env.PROJECT_TOKEN;
@@ -18,6 +19,15 @@ const STATUS_OK = "Yes";
 const STATUS_ERR = "Error";
 const FIELD_RESPONSIBLE = process.env.FIELD_RESPONSIBLE || "ITAC Jira Responsible";
 const RESPONSIBLE_MAP = parseResponsibleMap(process.env.RESPONSIBLE_MAP);
+const RESPONSIBLE_LABELS = parseLabels(process.env.RESPONSIBLE_LABELS);
+
+function parseLabels(raw) {
+  if (!raw || !raw.trim()) return new Set();
+  let arr;
+  try { arr = JSON.parse(raw); } catch (e) { fail(`RESPONSIBLE_LABELS is not valid JSON: ${e.message}`); }
+  if (!Array.isArray(arr)) fail("RESPONSIBLE_LABELS must be a JSON array of label names.");
+  return new Set(arr.map(l => String(l).trim().toLowerCase()));
+}
 
 function parseResponsibleMap(raw) {
   if (!raw || !raw.trim()) return {};
@@ -57,8 +67,8 @@ const FIELD_VALUES = `
     }
   }
   content {
-    ... on Issue { number assignees(first: 1) { nodes { login } } }
-    ... on PullRequest { number assignees(first: 1) { nodes { login } } }
+    ... on Issue { number assignees(first: 1) { nodes { login } } labels(first: 50) { nodes { name } } }
+    ... on PullRequest { number assignees(first: 1) { nodes { login } } labels(first: 50) { nodes { name } } }
   }`;
 
 async function loadProject() {
@@ -102,8 +112,8 @@ async function loadProject() {
     fail(`"${FIELD_STATUS}" must be Single select or Text (is ${fields.status.dataType}).`);
   }
 
-  // "ITAC Jira Responsible" is only needed when a mapping is configured.
-  if (Object.keys(RESPONSIBLE_MAP).length) {
+  // "ITAC Jira Responsible" is only needed when a mapping and eligible labels are configured.
+  if (Object.keys(RESPONSIBLE_MAP).length && RESPONSIBLE_LABELS.size) {
     const resp = byName[FIELD_RESPONSIBLE];
     if (!resp) fail(`Field "${FIELD_RESPONSIBLE}" not found on project "${project.title}".`);
     if (resp.dataType !== "SINGLE_SELECT") fail(`"${FIELD_RESPONSIBLE}" must be a Single select field (is ${resp.dataType}).`);
@@ -195,11 +205,14 @@ function valuesByField(item) {
   return out;
 }
 
-// Sets "ITAC Jira Responsible" from the first assignee. Leaves the field alone when there is
-// no assignee or the assignee isn't mapped, so manual values are never cleared.
+// Sets "ITAC Jira Responsible" from the first assignee, but only on items with an eligible
+// label (RESPONSIBLE_LABELS). Leaves the field alone when the item lacks such a label, has no
+// assignee, or the assignee isn't mapped, so manual values are never cleared.
 async function syncResponsible(project, fields, item, vals, stats) {
   const resp = fields.responsible;
   if (!resp) return;
+  const labels = item.content?.labels?.nodes ?? [];
+  if (!labels.some(l => RESPONSIBLE_LABELS.has(l.name.trim().toLowerCase()))) return;
   const login = item.content?.assignees?.nodes?.[0]?.login;
   if (!login) return;
   const opt = resp.optionByLogin[login.toLowerCase()];
