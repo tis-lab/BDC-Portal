@@ -1,7 +1,5 @@
 // Normalizes "ITAC Jira ID", sets "ITAC Jira URL", and marks "ITAC Jira" Yes/Error
-// on items of an org-level GitHub Project (v2). Also sets "ITAC Jira Responsible"
-// from the item's first assignee, using RESPONSIBLE_MAP (JSON: GitHub login -> option name),
-// only on items carrying a label from RESPONSIBLE_LABELS (JSON array of label names).
+// on items of an org-level GitHub Project (v2).
 import { appendFileSync } from "node:fs";
 
 const TOKEN = process.env.PROJECT_TOKEN;
@@ -17,25 +15,6 @@ const URL_BASE = "https://itacjira.nhlbi.nih.gov/projects/BDCP/issues/";
 const CANONICAL = /^BDCP-\d+$/;
 const STATUS_OK = "Yes";
 const STATUS_ERR = "Error";
-const FIELD_RESPONSIBLE = process.env.FIELD_RESPONSIBLE || "ITAC Jira Responsible";
-const RESPONSIBLE_MAP = parseResponsibleMap(process.env.RESPONSIBLE_MAP);
-const RESPONSIBLE_LABELS = parseLabels(process.env.RESPONSIBLE_LABELS);
-
-function parseLabels(raw) {
-  if (!raw || !raw.trim()) return new Set();
-  let arr;
-  try { arr = JSON.parse(raw); } catch (e) { fail(`RESPONSIBLE_LABELS is not valid JSON: ${e.message}`); }
-  if (!Array.isArray(arr)) fail("RESPONSIBLE_LABELS must be a JSON array of label names.");
-  return new Set(arr.map(l => String(l).trim().toLowerCase()));
-}
-
-function parseResponsibleMap(raw) {
-  if (!raw || !raw.trim()) return {};
-  let obj;
-  try { obj = JSON.parse(raw); } catch (e) { fail(`RESPONSIBLE_MAP is not valid JSON: ${e.message}`); }
-  // GitHub logins are case-insensitive.
-  return Object.fromEntries(Object.entries(obj).map(([login, value]) => [login.toLowerCase(), String(value)]));
-}
 
 
 // ---------- GraphQL ----------
@@ -65,10 +44,6 @@ const FIELD_VALUES = `
         field { ... on ProjectV2FieldCommon { id } }
       }
     }
-  }
-  content {
-    ... on Issue { number assignees(first: 1) { nodes { login } } labels(first: 50) { nodes { name } } }
-    ... on PullRequest { number assignees(first: 1) { nodes { login } } labels(first: 50) { nodes { name } } }
   }`;
 
 async function loadProject() {
@@ -110,22 +85,6 @@ async function loadProject() {
     }
   } else if (fields.status.dataType !== "TEXT") {
     fail(`"${FIELD_STATUS}" must be Single select or Text (is ${fields.status.dataType}).`);
-  }
-
-  // "ITAC Jira Responsible" is only needed when a mapping and eligible labels are configured.
-  if (Object.keys(RESPONSIBLE_MAP).length && RESPONSIBLE_LABELS.size) {
-    const resp = byName[FIELD_RESPONSIBLE];
-    if (!resp) fail(`Field "${FIELD_RESPONSIBLE}" not found on project "${project.title}".`);
-    if (resp.dataType !== "SINGLE_SELECT") fail(`"${FIELD_RESPONSIBLE}" must be a Single select field (is ${resp.dataType}).`);
-    // Map each login straight to an option; warn (don't fail) on values with no matching option.
-    resp.optionByLogin = {};
-    for (const [login, value] of Object.entries(RESPONSIBLE_MAP)) {
-      const opt = resp.options.find(o => o.name.trim().toLowerCase() === value.trim().toLowerCase());
-      if (opt) resp.optionByLogin[login] = opt;
-      else console.log(`::warning::"${FIELD_RESPONSIBLE}" has no option "${value}" (mapped from ${login}); ` +
-                       `options are: ${resp.options.map(o => o.name).join(", ")}`);
-    }
-    fields.responsible = resp;
   }
   return { project, fields };
 }
@@ -205,37 +164,8 @@ function valuesByField(item) {
   return out;
 }
 
-// Sets "ITAC Jira Responsible" from the first assignee, but only on items with an eligible
-// label (RESPONSIBLE_LABELS). Leaves the field alone when the item lacks such a label, has no
-// assignee, or the assignee isn't mapped, so manual values are never cleared.
-async function syncResponsible(project, fields, item, vals, stats) {
-  const resp = fields.responsible;
-  if (!resp) return;
-  const labels = item.content?.labels?.nodes ?? [];
-  if (!labels.some(l => RESPONSIBLE_LABELS.has(l.name.trim().toLowerCase()))) return;
-  const login = item.content?.assignees?.nodes?.[0]?.login;
-  if (!login) return;
-  const opt = resp.optionByLogin[login.toLowerCase()];
-  if (!opt) return;
-  if (vals[resp.id]?.optionId === opt.id) return;
-  const label = `${item.id}${item.content?.number ? ` (#${item.content.number})` : ""}`;
-  try {
-    await setOption(project.id, item.id, resp.id, opt.id);
-    stats.responsibleChanged++;
-    const line = `${label}: responsible -> "${opt.name}" (assignee ${login})`;
-    console.log((DRY_RUN ? "[dry-run] " : "") + line);
-    stats.log.push(line);
-  } catch (e) {
-    const line = `${label}: responsible update failed: ${e.message}`;
-    console.log(line);
-    stats.log.push(line);
-    stats.apiErrors++;
-  }
-}
-
 async function processItem(project, fields, item, stats) {
   const vals = valuesByField(item);
-  await syncResponsible(project, fields, item, vals, stats);
   const raw = vals[fields.id.id]?.text ?? "";
   if (!raw.trim()) { stats.skipped++; return; }
 
@@ -316,7 +246,7 @@ async function main() {
   if (!Number.isInteger(PROJECT_NUMBER)) fail("PROJECT_NUMBER repo variable is not set or not a number.");
   const { project, fields } = await loadProject();
   console.log(`Project: ${project.title} (#${PROJECT_NUMBER})${DRY_RUN ? " [DRY RUN]" : ""}`);
-  const stats = { ok: 0, error: 0, skipped: 0, changed: 0, responsibleChanged: 0, apiErrors: 0, log: [] };
+  const stats = { ok: 0, error: 0, skipped: 0, changed: 0, apiErrors: 0, log: [] };
 
   if (ITEM_ID) {
     await processItem(project, fields, await oneItem(ITEM_ID, project.id), stats);
@@ -327,8 +257,7 @@ async function main() {
   const summary =
     `### ITAC Jira sync${DRY_RUN ? " (dry run)" : ""}\n\n` +
     `Valid: ${stats.ok} · Error: ${stats.error} · Empty/skipped: ${stats.skipped} · ` +
-    `Items changed: ${stats.changed} · Responsible set: ${stats.responsibleChanged} · ` +
-    `API failures: ${stats.apiErrors}\n\n` +
+    `Items changed: ${stats.changed} · API failures: ${stats.apiErrors}\n\n` +
     (stats.log.length ? "```\n" + stats.log.join("\n") + "\n```\n" : "");
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);

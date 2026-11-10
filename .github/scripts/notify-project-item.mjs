@@ -1,6 +1,9 @@
 // Notifies NOTIFY_USER about activity on an org GitHub Project (v2):
 //   - issues newly added to the project
 //   - changes to ITAC Jira Responsible, Sprint, Quarter Start, Quarter End and story points
+// It also sets ITAC Jira Responsible when an item's first assignee changes or the field is
+// empty, using the rules
+// in lib/responsible.mjs (RESPONSIBLE_MAP and RESPONSIBLE_LABELS).
 //
 // Projects have no change history in the API, so field changes are detected by
 // comparing each run's values with a snapshot saved by the previous run
@@ -11,6 +14,9 @@
 //   issue             a comment on each affected issue
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  RESPONSIBLE_CONTENT_FIELDS, loadResponsibleConfig, resolveResponsibleOptions, desiredResponsible, firstAssignee,
+} from "./lib/responsible.mjs";
 
 const env = process.env;
 const PROJECT_TOKEN = env.PROJECT_TOKEN;
@@ -203,8 +209,14 @@ async function loadFieldIds() {
     `query($org: String!, $num: Int!) {
       organization(login: $org) {
         projectV2(number: $num) {
+          id
           title
-          fields(first: 100) { nodes { ... on ProjectV2FieldCommon { id name dataType } } }
+          fields(first: 100) {
+            nodes {
+              ... on ProjectV2FieldCommon { id name dataType }
+              ... on ProjectV2SingleSelectField { options { id name } }
+            }
+          }
         }
       }
     }`,
@@ -220,7 +232,9 @@ async function loadFieldIds() {
       fail(`Field "${t.field}" must be ${t.types.join(" or ")} (is ${f.dataType}).`);
     }
     ids[t.key] = f.id;
+    if (t.key === "responsible") ids.responsibleOptions = f.options ?? [];
   }
+  ids.projectId = project.id;
   for (const [key, name] of Object.entries(DISPLAY)) {
     if (byName[name]) ids[key] = byName[name].id;
     else console.error(`::warning::Field "${name}" not found; notifications will not include it.`);
@@ -242,8 +256,8 @@ async function loadItems() {
                 id databaseId createdAt type
                 creator { login }
                 content {
-                  ... on Issue { id number title url repository { nameWithOwner } }
-                  ... on PullRequest { id number title url repository { nameWithOwner } }
+                  ... on Issue { id number title url repository { nameWithOwner } ${RESPONSIBLE_CONTENT_FIELDS} }
+                  ... on PullRequest { id number title url repository { nameWithOwner } ${RESPONSIBLE_CONTENT_FIELDS} }
                   ... on DraftIssue { id title }
                 }
                 ${FIELD_VALUES}
@@ -281,6 +295,34 @@ export function diff(prev, curr) {
   return TRACKED
     .filter(t => t.key in prev && (prev[t.key] ?? "") !== (curr[t.key] ?? ""))
     .map(t => ({ label: t.label, from: prev[t.key] ?? "", to: curr[t.key] ?? "" }));
+}
+
+// ---------- ITAC Jira Responsible ----------
+async function setOption(projectId, itemId, fieldId, optionId) {
+  if (DRY_RUN) return;
+  await gql(PROJECT_TOKEN,
+    `mutation($p: ID!, $i: ID!, $f: ID!, $o: String!) {
+      updateProjectV2ItemFieldValue(input: {projectId: $p, itemId: $i, fieldId: $f, value: {singleSelectOptionId: $o}}) {
+        projectV2Item { id }
+      }
+    }`,
+    { p: projectId, i: itemId, f: fieldId, o: optionId });
+}
+
+// Sets "ITAC Jira Responsible" with the shared rules when either
+//   - the first assignee differs from the previous run's, or
+//   - the field is empty (this also covers new items and the first run after deploying).
+// Otherwise the field is left alone, so values set by hand persist until the assignee changes.
+// Returns the new option name if the field was (or, in a dry run, would be) changed,
+// otherwise null. Throws on API failure.
+export async function applyResponsible(item, prev, snap, fieldIds, responsible) {
+  if (!responsible) return null;
+  const assigneeChanged = !!prev && "assignee" in prev && prev.assignee !== snap.assignee;
+  if (!assigneeChanged && snap.responsible) return null;
+  const want = desiredResponsible(item.content, responsible.labels, responsible.optionByLogin);
+  if (!want || want.option.name === snap.responsible) return null;
+  await setOption(fieldIds.projectId, item.id, fieldIds.responsible, want.option.id);
+  return want.option.name;
 }
 
 // ---------- State ----------
@@ -353,12 +395,22 @@ async function main() {
   if (!["digest", "issue"].includes(NOTIFY_MODE)) fail(`NOTIFY_MODE must be "digest" or "issue" (got "${NOTIFY_MODE}").`);
   if (NOTIFY_MODE === "digest" && (!REPO_TOKEN || !CURRENT_REPO)) fail("Digest mode needs REPO_TOKEN and GITHUB_REPOSITORY.");
 
-  const stats = { items: 0, added: 0, changed: 0, alreadyNotified: 0, skippedSelf: 0, redacted: 0, draftsSkipped: 0, errors: 0 };
+  const stats = { items: 0, added: 0, changed: 0, responsibleSet: 0, alreadyNotified: 0, skippedSelf: 0, redacted: 0, draftsSkipped: 0, errors: 0 };
   const log = [];
   const fieldIds = await loadFieldIds();
   const items = await loadItems();
   const prevState = loadState();
   const baseline = !prevState;
+
+  let responsible = null;
+  try { responsible = loadResponsibleConfig(env); } catch (e) { fail(e.message); }
+  if (responsible) {
+    const { optionByLogin, missing } = resolveResponsibleOptions(fieldIds.responsibleOptions, responsible.map);
+    for (const { login, value } of missing) {
+      console.error(`::warning::"ITAC Jira Responsible" has no option "${value}" (mapped from ${login}).`);
+    }
+    responsible.optionByLogin = optionByLogin;
+  }
 
   // 1. Snapshot every item and diff against the previous run.
   const newState = {};
@@ -367,8 +419,27 @@ async function main() {
     if (it.type === "REDACTED" || !it.content) { stats.redacted++; continue; }
     stats.items++;
     const snap = snapshot(it, fieldIds);
+    // First assignee is kept in state (not reported) so assignee changes can be detected.
+    snap.assignee = firstAssignee(it.content).toLowerCase();
     newState[it.id] = snap;
     const prev = prevState?.items?.[it.id];
+    try {
+      const set = await applyResponsible(it, prev, snap, fieldIds, responsible);
+      if (set) {
+        const why = prev && "assignee" in prev && prev.assignee !== snap.assignee
+          ? `assignee "${prev.assignee}" -> "${snap.assignee}"`
+          : `field was empty, assignee "${snap.assignee}"`;
+        log.push(`responsible: ${itemTitle(it)} | ${why}, ` +
+                 `ITAC Jira Responsible "${snap.responsible}" -> "${set}"`);
+        stats.responsibleSet++;
+        snap.responsible = set; // reported below as a normal Responsible change
+      }
+    } catch (e) {
+      stats.errors++;
+      // Retry next run: an empty field is retried anyway; an assignee change needs the old assignee kept.
+      if (prev && "assignee" in prev) snap.assignee = prev.assignee;
+      console.error(`::warning::Setting ITAC Jira Responsible on ${it.id}: ${e.message}`);
+    }
     if (prev) {
       const d = diff(prev, snap);
       if (d.length) changes.push({ item: it, changes: d, prev, info: displayInfo(it, fieldIds) });
@@ -460,6 +531,7 @@ async function main() {
     `### Project ${PROJECT_NUMBER} notifications (${NOTIFY_MODE} mode)${DRY_RUN ? " (dry run)" : ""}\n\n` +
     (baseline ? "No saved state found: recorded a baseline, so no field changes are reported this run.\n\n" : "") +
     `Items: ${stats.items} · Added: ${additions.length} · Changed: ${changes.length} · ` +
+    `ITAC Jira Responsible set: ${stats.responsibleSet} · ` +
     `Already notified: ${stats.alreadyNotified} · Added by ${NOTIFY_USER} (skipped): ${stats.skippedSelf} · ` +
     `Hidden from token: ${stats.redacted} · Draft changes skipped: ${stats.draftsSkipped} · Errors: ${stats.errors}\n\n` +
     (log.length ? "```\n" + log.join("\n") + "\n```\n" : "");
